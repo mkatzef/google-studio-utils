@@ -6,8 +6,14 @@ import json
 EARTH_RADIUS_M = 6.371e6
 EARTH_CIRC_M = 2 * math.pi * EARTH_RADIUS_M
 """
-Caution, some latlon, some lonlat
+Note, using lonlat
 """
+
+
+def moving_average(a, n=3) :
+    ret = np.cumsum(a, dtype=float)
+    ret[n:] = ret[n:] - ret[:-n]
+    return ret[n - 1:] / n
 
 
 def angle180_180(a):
@@ -15,7 +21,7 @@ def angle180_180(a):
     return (a + 180) % 360 - 180
 
 
-def get_block(label, vals, min_val=None):
+def get_block(label, vals, min_val=None, max_val=None):
     """
         linear_block = {  # UNUSED
             "transitionIn": {
@@ -52,6 +58,8 @@ def get_block(label, vals, min_val=None):
 
     if min_val is not None:
         ret['value']["minValueRange"] = min_val
+    if max_val is not None:
+        ret['value']["maxValueRange"] = max_val
     if label == 'altitude':
         ret['value']["logarithmic"] = False
     
@@ -101,6 +109,14 @@ def dx_dy_from_coords(c1, c2):
     return dx, dy
 
 
+def coord_dist_m(c1, c2):
+    return np.linalg.norm(dx_dy_from_coords(c1, c2))
+
+
+def coord_mean(coords):
+    return np.array(coords).mean(axis=0)
+
+
 def get_angle_rad(c1, c2):
     dx, dy = dx_dy_from_coords(c1, c2)
     return math.atan2(dy, dx)
@@ -117,7 +133,9 @@ def pans_to_vals(p):
         0 deg pan is north
         90 deg is east
         Pan vals are simply bearings / 360
+    DEPRECATED
     """
+    assert False, "deprecated"
     return p / 360
 
 
@@ -126,7 +144,23 @@ def get_rads_from_coords(coords):
 
 
 def get_pans_from_coords(coords):
-    return np.array([get_angle_bearing(coords[i], coords[i+1]) for i in range(len(coords) - 1)])
+    """
+    Returns a set of camera pans that face from current point to next,
+    using [-360]
+    """
+    ret = []
+    prev_b = 0
+    for i in range(len(coords) - 1):
+        b = get_angle_bearing(coords[i], coords[i+1])  # in [0, 360]
+
+        if abs(b - 360 - prev_b) < abs(b - prev_b):
+            b -= 360
+        elif abs(b + 360 - prev_b) < abs(b - prev_b):
+            b += 360
+        prev_b = b
+        ret.append(b)
+
+    return np.array(ret)
 
 
 def tilts_to_vals(t):
@@ -138,6 +172,9 @@ def tilts_to_vals(t):
 
 
 def coords_from_kml(contents, n=None):
+    """
+    Returns lonlats
+    """
     marker1 = "<coordinates>"
     marker2 = "</coordinates>"
     pos1 = contents.index(marker1)
@@ -151,7 +188,7 @@ def coords_from_kml(contents, n=None):
     return coords
 
 
-def main(input_kml, template_file, out_file, alt_m=1000, n_steps=None, tilt_deg=30, backtrace=0):
+def main(input_kml, template_file, out_file, alt_m=1000, n_steps=None, tilt_deg=30, backtrace=0, moving_agv=3, noise_dist_m=50):
     """
     Tilt: 0 is downwards, 90 is horizontal
     """
@@ -159,6 +196,34 @@ def main(input_kml, template_file, out_file, alt_m=1000, n_steps=None, tilt_deg=
     with open(input_kml, 'r') as infile:
         contents = infile.read()
     coords = coords_from_kml(contents, n=n_steps)
+
+    if noise_dist_m != 0:
+        assert noise_dist_m > 0, "noise_dist_m must be > 0"
+        prev_anchor = None
+        current_cluster = None
+        coords_list = []
+        for coord in coords:
+            if prev_anchor is None:
+                prev_anchor = coord
+                current_cluster = [coord]
+
+            if coord_dist_m(coord, prev_anchor) < noise_dist_m:
+                current_cluster.append(coord)
+            else:
+                if prev_anchor is not None:
+                    coords_list.append(coord_mean(current_cluster))
+                
+                current_cluster = [coord]
+                prev_anchor = coord
+
+        coords_list.append(coord_mean(current_cluster))
+        coords = np.concatenate([c.reshape((1, 2)) for c in coords_list], axis=0)
+
+    if moving_agv != 0:
+        assert int(moving_agv) == moving_agv and moving_agv > 0, "moving_agv must be int > 0"
+        lon = moving_average(coords[:, 0], int(moving_agv)).reshape((-1, 1))
+        lat = moving_average(coords[:, 1], int(moving_agv)).reshape((-1, 1))
+        coords = np.concatenate((lon, lat), axis=1)
     n_steps = n_steps or len(coords)
 
     with open(template_file, 'r') as infile:
@@ -182,15 +247,21 @@ def main(input_kml, template_file, out_file, alt_m=1000, n_steps=None, tilt_deg=
     lon_vals = (lon_vals - lon_min) / s_lon
     lat_vals = (lat_vals - lat_min) / s_lat
 
+    pan_vals = get_pans_from_coords(coords)
+    pan_min = pan_vals.min()
+    pan_max = pan_vals.max()
+    pan_range = pan_max - pan_min
+    pan_vals = (pan_vals - pan_min) / pan_range    
+
     rot_args = [
-        ('rotationX', pans_to_vals(get_pans_from_coords(coords)), None),  # pan
-        ('rotationY', tilts_to_vals(np.array([tilt_deg] * 2)), None)  # one tilt for whole vid
+        ('rotationX', pan_vals, pan_min, pan_max),
+        ('rotationY', tilts_to_vals(np.array([tilt_deg] * 2)))  # one tilt for whole vid
     ]
 
     pos_args = [
         ('longitude', lon_vals, lon_min),
         ('latitude', lat_vals, lat_min),
-        ('altitude', alts_to_vals(alt_m * np.ones_like(lat_vals)), None)
+        ('altitude', alts_to_vals(alt_m * np.ones_like(lat_vals)))
     ]
 
     pos_jstr = json.dumps([get_block(*arg_set) for arg_set in pos_args])
@@ -207,9 +278,9 @@ def main(input_kml, template_file, out_file, alt_m=1000, n_steps=None, tilt_deg=
 
 if __name__ == '__main__':
     input_kml = "Untitled map.kml"  # aus
+    input_kml = "kkml.kml"  # aus
     #input_kml = "Directions from Las Vegas, NV, USA to San Francisco, CA, USA.kml"
     #input_kml = "Directions from Colosseum, Piazza del Colosseo, Rome, Metropolitan City of Rome, Italy to London Eye, London, UK.kml"
-    template_file = "kml_to_eps_template.eps"
+    template_file = "kml_to_esp_template.esp"
     out_file = "route_from_kml.esp"
-    main(input_kml, template_file, out_file, n_steps=200, tilt_deg=45, alt_m=10000, backtrace=None)
-
+    main(input_kml, template_file, out_file, n_steps=200, tilt_deg=45, alt_m=500, backtrace=50, moving_agv=3, noise_dist_m=50)

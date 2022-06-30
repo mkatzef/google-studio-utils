@@ -1,0 +1,11 @@
+*.kml
+*.kmz
+*.json
+*.esp
+*.mp4
+*.DS_Store
+*.html
+*.npy
+*.pkl
+
+
