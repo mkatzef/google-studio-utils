@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 """
 Note, using lonlat representation for coordinates
 """
@@ -8,7 +9,7 @@ import json
 
 EARTH_RADIUS_M = 6.371e6
 EARTH_CIRC_M = 2 * math.pi * EARTH_RADIUS_M
-TEMPLATE_FILE = "kml_to_esp_template.esp"
+TEMPLATE_FILE = "esp_template.esp"
 
 def moving_average(a, n=3) :
     ret = np.cumsum(a, dtype=float)
@@ -188,7 +189,7 @@ def coords_from_kml(contents, n=None):
     return coords
 
 
-def main(input_kml, out_file, alt_m=1000, n_steps=None, tilt_deg=30, backtrace=0, moving_agv=3, noise_dist_m=50):
+def main(input_kml, out_file, alt_m=1000, n_steps=None, tilt_deg=30, moving_agv=3, noise_dist_m=50):
     """
     Tilt: 0 is downwards, 90 is horizontal
     """
@@ -228,13 +229,6 @@ def main(input_kml, out_file, alt_m=1000, n_steps=None, tilt_deg=30, backtrace=0
 
     with open(TEMPLATE_FILE, 'r') as infile:
         template = infile.read()
-
-    if backtrace is None:
-        backtrace = math.tan(math.radians(tilt_deg)) * alt_m  # Situate the camera further back than the kml coord
-
-    coord_delta_lonlats = get_deltas(coords, backtrace)
-    n_deltas = len(coord_delta_lonlats)
-    coords = coords[:n_deltas] + coord_delta_lonlats
 
     lon_vals = coords[:, 0]
     lat_vals = coords[:, 1]
@@ -283,7 +277,8 @@ if __name__ == '__main__':
     parser.add_argument("--n_steps", type=int, help="Number of uniformly-spaced keyframes to add", default=200)
     parser.add_argument("--tilt", type=float, help="Angle (in degrees) the camera must be tilted in each keyframe", default=45)
     parser.add_argument("--alt", type=float, help="Altitude (in metres) for the camera", default=500)
-    parser.add_argument("--backtrace", type=float, help="Distance in metres to shift the camera behind each kml coord", default=50)
+    parser.add_argument("--noise_level", type=float, help="Distance (in metres) between consecutive points to consider them unique", default=50)
+    parser.add_argument("--moving_avg", type=int, help="Number of consecutive points to average over for smoother paths", default=3)
     args = parser.parse_args()
 
-    main(input_kml=args.kml, out_file=args.out, alt_m=args.alt, n_steps=args.n_steps, tilt_deg=args.tilt, backtrace=args.backtrace, moving_agv=3, noise_dist_m=50)
+    main(input_kml=args.kml, out_file=args.out, alt_m=args.alt, n_steps=args.n_steps, tilt_deg=args.tilt, moving_agv=args.moving_avg, noise_dist_m=args.noise_level)
