@@ -286,4 +286,4 @@ if __name__ == '__main__':
     parser.add_argument("--backtrace", type=float, help="Distance in metres to shift the camera behind each kml coord", default=50)
     args = parser.parse_args()
 
-    main(args.kml, args.out, args.n_steps, args.tilt_deg, args.alt, args.backtrace, moving_agv=3, noise_dist_m=50)
+    main(input_kml=args.kml, out_file=args.out, alt_m=args.alt, n_steps=args.n_steps, tilt_deg=args.tilt, backtrace=args.backtrace, moving_agv=3, noise_dist_m=50)
