@@ -1,14 +1,14 @@
+"""
+Note, using lonlat representation for coordinates
+"""
+import argparse
 import math
 import numpy as np
 import json
 
-
 EARTH_RADIUS_M = 6.371e6
 EARTH_CIRC_M = 2 * math.pi * EARTH_RADIUS_M
-"""
-Note, using lonlat
-"""
-
+TEMPLATE_FILE = "kml_to_esp_template.esp"
 
 def moving_average(a, n=3) :
     ret = np.cumsum(a, dtype=float)
@@ -62,7 +62,7 @@ def get_block(label, vals, min_val=None, max_val=None):
         ret['value']["maxValueRange"] = max_val
     if label == 'altitude':
         ret['value']["logarithmic"] = False
-    
+
     return ret
 
 
@@ -180,7 +180,7 @@ def coords_from_kml(contents, n=None):
     pos1 = contents.index(marker1)
     pos2 = contents.index(marker2)
     coords_str = contents[pos1 + len(marker1) : pos2]
-    
+
     coords = [tuple(map(float, c.strip().split(',')[:2])) for c in coords_str.strip().split('\n')]
     if n is not None:
         coords = coords[::len(coords) // n]
@@ -188,7 +188,7 @@ def coords_from_kml(contents, n=None):
     return coords
 
 
-def main(input_kml, template_file, out_file, alt_m=1000, n_steps=None, tilt_deg=30, backtrace=0, moving_agv=3, noise_dist_m=50):
+def main(input_kml, out_file, alt_m=1000, n_steps=None, tilt_deg=30, backtrace=0, moving_agv=3, noise_dist_m=50):
     """
     Tilt: 0 is downwards, 90 is horizontal
     """
@@ -212,7 +212,7 @@ def main(input_kml, template_file, out_file, alt_m=1000, n_steps=None, tilt_deg=
             else:
                 if prev_anchor is not None:
                     coords_list.append(coord_mean(current_cluster))
-                
+
                 current_cluster = [coord]
                 prev_anchor = coord
 
@@ -226,12 +226,12 @@ def main(input_kml, template_file, out_file, alt_m=1000, n_steps=None, tilt_deg=
         coords = np.concatenate((lon, lat), axis=1)
     n_steps = n_steps or len(coords)
 
-    with open(template_file, 'r') as infile:
+    with open(TEMPLATE_FILE, 'r') as infile:
         template = infile.read()
 
     if backtrace is None:
         backtrace = math.tan(math.radians(tilt_deg)) * alt_m  # Situate the camera further back than the kml coord
-    
+
     coord_delta_lonlats = get_deltas(coords, backtrace)
     n_deltas = len(coord_delta_lonlats)
     coords = coords[:n_deltas] + coord_delta_lonlats
@@ -251,7 +251,7 @@ def main(input_kml, template_file, out_file, alt_m=1000, n_steps=None, tilt_deg=
     pan_min = pan_vals.min()
     pan_max = pan_vals.max()
     pan_range = pan_max - pan_min
-    pan_vals = (pan_vals - pan_min) / pan_range    
+    pan_vals = (pan_vals - pan_min) / pan_range
 
     rot_args = [
         ('rotationX', pan_vals, pan_min, pan_max),
@@ -266,7 +266,7 @@ def main(input_kml, template_file, out_file, alt_m=1000, n_steps=None, tilt_deg=
 
     pos_jstr = json.dumps([get_block(*arg_set) for arg_set in pos_args])
     rot_jstr = json.dumps(
-        [get_block(*arg_set) for arg_set in rot_args] + 
+        [get_block(*arg_set) for arg_set in rot_args] +
         [{"type": "rotationZ","value": {}}]  # unused
     )
     out_str = template % (pos_jstr, rot_jstr)
@@ -277,10 +277,13 @@ def main(input_kml, template_file, out_file, alt_m=1000, n_steps=None, tilt_deg=
 
 
 if __name__ == '__main__':
-    input_kml = "Untitled map.kml"  # aus
-    input_kml = "kkml.kml"  # aus
-    #input_kml = "Directions from Las Vegas, NV, USA to San Francisco, CA, USA.kml"
-    #input_kml = "Directions from Colosseum, Piazza del Colosseo, Rome, Metropolitan City of Rome, Italy to London Eye, London, UK.kml"
-    template_file = "kml_to_esp_template.esp"
-    out_file = "route_from_kml.esp"
-    main(input_kml, template_file, out_file, n_steps=200, tilt_deg=45, alt_m=500, backtrace=50, moving_agv=3, noise_dist_m=50)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("kml", help="Input kml filename")
+    parser.add_argument("out", help="Output esp filename", default="out.esp")
+    parser.add_argument("--n_steps", type=int, help="Number of uniformly-spaced keyframes to add", default=200)
+    parser.add_argument("--tilt", type=float, help="Angle (in degrees) the camera must be tilted in each keyframe", default=45)
+    parser.add_argument("--alt", type=float, help="Altitude (in metres) for the camera", default=500)
+    parser.add_argument("--backtrace", type=float, help="Distance in metres to shift the camera behind each kml coord", default=50)
+    args = parser.parse_args()
+
+    main(args.kml, args.out, args.n_steps, args.tilt_deg, args.alt, args.backtrace, moving_agv=3, noise_dist_m=50)
