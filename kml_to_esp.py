@@ -1,7 +1,11 @@
 #!/usr/bin/python3
 """
-Note, using lonlat representation for coordinates
+Converts the location data of a KML file into a set of camera positions in a new
+ESP file (used by Google Earth Studio).
+
+Note: using lonlat representation for coordinates
 """
+
 import argparse
 import math
 import numpy as np
@@ -11,34 +15,31 @@ EARTH_RADIUS_M = 6.371e6
 EARTH_CIRC_M = 2 * math.pi * EARTH_RADIUS_M
 TEMPLATE_FILE = "esp_template.esp"
 
-def moving_average(a, n=3) :
+
+def moving_average(a, n=3):
+    """ From https://stackoverflow.com/a/14314054 """
     ret = np.cumsum(a, dtype=float)
     ret[n:] = ret[n:] - ret[:-n]
     return ret[n - 1:] / n
 
 
 def angle180_180(a):
-    """ shifts to [-180, 180] """
+    """
+    Converts an input angle in degrees and returns its representation in
+    [-180, 180] degrees (from the same origin)
+    """
     return (a + 180) % 360 - 180
 
 
 def get_block(label, vals, min_val=None, max_val=None):
     """
-        linear_block = {  # UNUSED
-            "transitionIn": {
-            "x": 0,
-            "y": 0,
-            "influence": 0,
-            "type": "linear"
-        },
-        "transitionOut": {
-            "x": 0,
-            "y": 0,
-            "influence": 0,
-            "type": "linear"
-        },
-        "transitionLinked": False
-        }
+    Returns one of the basic ESP file data blocks/JSON objects.
+
+    Note:
+        * Properties are represented by parallel arrays of lat, lon, alt, etc
+        * Time is a fraction [0, 1] of the total project time
+        * Values are min_val + value * (max_val - min_val), with offsets and
+            multipliers reverse engineered/identified empirically... docs are sparse
     """
     n_steps = len(vals)
 
@@ -69,6 +70,7 @@ def get_block(label, vals, min_val=None, max_val=None):
 
 def alts_to_vals(a):
     """
+    Returns the ESP-expected alt values. This was found empirically
     Altitude
         1000, 2000, 10000, 100000 increase linearly
         alt val = alt in m * 0.001535670634989921 / 1e5
@@ -111,43 +113,46 @@ def dx_dy_from_coords(c1, c2):
 
 
 def coord_dist_m(c1, c2):
+    """
+    Euclidean dist between c1 and c2 in metres
+    """
     return np.linalg.norm(dx_dy_from_coords(c1, c2))
 
 
 def coord_mean(coords):
+    """
+    Mean of an array of coordinates (lon, lat) on each row
+    """
     return np.array(coords).mean(axis=0)
 
 
 def get_angle_rad(c1, c2):
+    """
+    Returns the angle (from horizontal) of the line from c1 to c2
+    """
     dx, dy = dx_dy_from_coords(c1, c2)
     return math.atan2(dy, dx)
 
 
 def get_angle_bearing(c1, c2):
+    """
+    Returns the angle from c1 to c2 as a bearing
+    """
     angle_rad = get_angle_rad(c1, c2)
     return (90 - math.degrees(angle_rad)) % 360
 
 
-def pans_to_vals(p):
-    """
-    Rotation
-        0 deg pan is north
-        90 deg is east
-        Pan vals are simply bearings / 360
-    DEPRECATED
-    """
-    assert False, "deprecated"
-    return p / 360
-
-
 def get_rads_from_coords(coords):
+    """
+    Returns the n-1 angles from p_i to p_{i+1} of the given array of n points
+    """
     return np.array([get_angle_rad(coords[i], coords[i+1]) for i in range(len(coords) - 1)])
 
 
 def get_pans_from_coords(coords):
     """
     Returns a set of camera pans that face from current point to next,
-    using [-360]
+    using [-360, 360]
     """
     ret = []
     prev_b = 0
@@ -166,15 +171,17 @@ def get_pans_from_coords(coords):
 
 def tilts_to_vals(t):
     """
-    Tilt degs are 0 for downwards, 90 for horizon
-    Tilt vals are deg / 180
+    Converts tilt input to the format expected by ESP.
+
+    Inputs: tilt degs are 0 for downwards, 90 for horizon
+    Outputs: tilt vals are deg / 180
     """
     return t / 180
 
 
 def coords_from_kml(contents, n=None):
     """
-    Returns lonlats
+    Returns lonlats contained in a standard KML file's <coordinates> tag
     """
     marker1 = "<coordinates>"
     marker2 = "</coordinates>"
@@ -189,47 +196,50 @@ def coords_from_kml(contents, n=None):
     return coords
 
 
-def main(input_kml, out_file, alt_m=1000, n_steps=None, tilt_deg=30, moving_agv=3, noise_dist_m=50):
+def remove_stationary(coords, noise_dist_m):
     """
-    Tilt: 0 is downwards, 90 is horizontal
+    Ignore consecutive points if they are within some distance threshold from
+    previous.
     """
+    assert noise_dist_m > 0, "noise_dist_m must be > 0"
+    prev_anchor = None
+    current_cluster = None
+    coords_list = []
+    for coord in coords:
+        if prev_anchor is None:
+            prev_anchor = coord
+            current_cluster = [coord]
 
-    with open(input_kml, 'r') as infile:
-        contents = infile.read()
-    coords = coords_from_kml(contents, n=n_steps)
+        if coord_dist_m(coord, prev_anchor) < noise_dist_m:
+            current_cluster.append(coord)
+        else:
+            if prev_anchor is not None:
+                coords_list.append(coord_mean(current_cluster))
 
-    if noise_dist_m != 0:
-        assert noise_dist_m > 0, "noise_dist_m must be > 0"
-        prev_anchor = None
-        current_cluster = None
-        coords_list = []
-        for coord in coords:
-            if prev_anchor is None:
-                prev_anchor = coord
-                current_cluster = [coord]
+            current_cluster = [coord]
+            prev_anchor = coord
 
-            if coord_dist_m(coord, prev_anchor) < noise_dist_m:
-                current_cluster.append(coord)
-            else:
-                if prev_anchor is not None:
-                    coords_list.append(coord_mean(current_cluster))
+    coords_list.append(coord_mean(current_cluster))
+    coords = np.concatenate([c.reshape((1, 2)) for c in coords_list], axis=0)
 
-                current_cluster = [coord]
-                prev_anchor = coord
+    return coords
 
-        coords_list.append(coord_mean(current_cluster))
-        coords = np.concatenate([c.reshape((1, 2)) for c in coords_list], axis=0)
 
-    if moving_agv != 0:
-        assert int(moving_agv) == moving_agv and moving_agv > 0, "moving_agv must be int > 0"
-        lon = moving_average(coords[:, 0], int(moving_agv)).reshape((-1, 1))
-        lat = moving_average(coords[:, 1], int(moving_agv)).reshape((-1, 1))
-        coords = np.concatenate((lon, lat), axis=1)
-    n_steps = n_steps or len(coords)
+def smooth_coords(coords, moving_avg):
+    """
+    Apply moving average to coords
+    """
+    assert int(moving_avg) == moving_avg and moving_avg > 0, "moving_avg must be int > 0"
+    lon = moving_average(coords[:, 0], int(moving_avg)).reshape((-1, 1))
+    lat = moving_average(coords[:, 1], int(moving_avg)).reshape((-1, 1))
+    coords = np.concatenate((lon, lat), axis=1)
+    return coords
 
-    with open(TEMPLATE_FILE, 'r') as infile:
-        template = infile.read()
 
+def get_esp_file_data(coords, alt_m, tilt_deg):
+    """
+    Generate the esp file data blocks based on filtered coords and camera args
+    """
     lon_vals = coords[:, 0]
     lat_vals = coords[:, 1]
     lon_min = lon_vals.min()
@@ -258,6 +268,34 @@ def main(input_kml, out_file, alt_m=1000, n_steps=None, tilt_deg=30, moving_agv=
         ('altitude', alts_to_vals(alt_m * np.ones_like(lat_vals)))
     ]
 
+    return rot_args, pos_args
+
+
+def main(input_kml, out_file, n_steps=None, alt_m=1000, tilt_deg=30, moving_avg=3, noise_dist_m=50):
+    """
+    Uses helper functions to:
+        * Read input
+        * Filter coords
+        * Generate esp file contents
+        * Write to file
+    """
+
+    with open(input_kml, 'r') as infile:
+        contents = infile.read()
+    coords = coords_from_kml(contents, n=n_steps)
+
+    if noise_dist_m != 0:
+        coords = remove_stationary(coords, noise_dist_m)
+
+    if moving_avg != 0:
+        smooth_coords(coords, moving_avg)
+    n_steps = n_steps or len(coords)
+
+    rot_args, pos_args = get_esp_file_data(coords, alt_m, tilt_deg)
+
+    # Populate template
+    with open(TEMPLATE_FILE, 'r') as infile:
+        template = infile.read()
     pos_jstr = json.dumps([get_block(*arg_set) for arg_set in pos_args])
     rot_jstr = json.dumps(
         [get_block(*arg_set) for arg_set in rot_args] +
@@ -265,6 +303,7 @@ def main(input_kml, out_file, alt_m=1000, n_steps=None, tilt_deg=30, moving_agv=
     )
     out_str = template % (pos_jstr, rot_jstr)
 
+    # Write to file
     with open(out_file, 'w') as outfile:
         outfile.write(out_str)
     print("Wrote to", out_file)
@@ -281,4 +320,4 @@ if __name__ == '__main__':
     parser.add_argument("--moving_avg", type=int, help="Number of consecutive points to average over for smoother paths", default=3)
     args = parser.parse_args()
 
-    main(input_kml=args.kml, out_file=args.out, alt_m=args.alt, n_steps=args.n_steps, tilt_deg=args.tilt, moving_agv=args.moving_avg, noise_dist_m=args.noise_level)
+    main(input_kml=args.kml, out_file=args.out, n_steps=args.n_steps, alt_m=args.alt, tilt_deg=args.tilt, moving_avg=args.moving_avg, noise_dist_m=args.noise_level)
